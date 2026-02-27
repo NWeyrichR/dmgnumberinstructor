@@ -27,6 +27,8 @@ ConVar g_cvTimeout;
 ConVar g_cvAggregateWindow;
 ConVar g_cvRange;
 ConVar g_cvForceCaption;
+ConVar g_cvMode;
+ConVar g_cvChainReset;
 
 int g_iSerial[MAXPLAYERS + 1];
 int g_iSlotSerial[MAXPLAYERS + 1][STACK_LIMIT];
@@ -35,6 +37,10 @@ int g_iPendingSerial[MAXPLAYERS + 1][MAX_TRACKED_ENTITIES + 1];
 bool g_bPendingHeadshot[MAXPLAYERS + 1][MAX_TRACKED_ENTITIES + 1];
 float g_fLastHeadshotAt[MAXPLAYERS + 1][MAX_TRACKED_ENTITIES + 1];
 Handle g_hPendingTimer[MAXPLAYERS + 1][MAX_TRACKED_ENTITIES + 1];
+int g_iChainVictim[MAXPLAYERS + 1];
+int g_iChainDamage[MAXPLAYERS + 1];
+bool g_bChainHeadshot[MAXPLAYERS + 1];
+float g_fChainLastHitAt[MAXPLAYERS + 1];
 
 // refs do env_instructor_hint por slot
 int g_iSlotHintRef[MAXPLAYERS + 1][STACK_LIMIT];
@@ -56,6 +62,8 @@ public void OnPluginStart()
     g_cvAggregateWindow = CreateConVar("sm_dmg_instructor_aggregate_window", "0.03", "Janela para somar pellets/ticks em um numero", FCVAR_NOTIFY, true, 0.0, true, 0.25);
     g_cvRange = CreateConVar("sm_dmg_instructor_range", "3000", "Distancia maxima para ver o hint em unidades", FCVAR_NOTIFY, true, 0.0, true, 10000.0);
     g_cvForceCaption = CreateConVar("sm_dmg_instructor_forcecaption", "1", "1=forca caption para aparecer a longa distancia", FCVAR_NOTIFY, true, 0.0, true, 1.0);
+    g_cvMode = CreateConVar("sm_dmg_instructor_mode", "0", "0=modo atual empilhado, 1=modo acumulado continuo", FCVAR_NOTIFY, true, 0.0, true, 1.0);
+    g_cvChainReset = CreateConVar("sm_dmg_instructor_chain_reset", "1.0", "Tempo sem dano para resetar a soma do modo 1", FCVAR_NOTIFY, true, 0.1, true, 10.0);
     RegConsoleCmd("sm_dmghinttest", Command_DmgHintTest);
     HookEvent("round_start", Event_RoundStart, EventHookMode_PostNoCopy);
     HookEvent("player_hurt", Event_PlayerHurt, EventHookMode_Post);
@@ -77,6 +85,7 @@ public void OnClientPutInServer(int client)
         g_iSlotHintRef[client][s] = INVALID_ENT_REFERENCE;
         g_iSlotAnchorRef[client][s] = INVALID_ENT_REFERENCE;
     }
+    ResetChainState(client);
 
     // hook de dano em players também
     SDKHook(client, SDKHook_OnTakeDamagePost, OnTakeDamagePost_Any);
@@ -95,6 +104,7 @@ public void OnClientDisconnect(int client)
     }
     ResetPendingDamageForAttacker(client);
     ResetPendingDamageForVictim(client);
+    ResetChainState(client);
     g_iSerial[client] = 0;
 }
 
@@ -110,6 +120,7 @@ public void OnMapStart()
             g_iSlotAnchorRef[client][s] = INVALID_ENT_REFERENCE;
         }
         ResetPendingDamageForAttacker(client);
+        ResetChainState(client);
     }
 }
 
@@ -163,11 +174,11 @@ public void OnTakeDamagePost_Any(int victim, int attacker, int inflictor, float 
     QueueDamageHint(attacker, victim, dmg);
 }
 
-static void ShowDamageFollow(int attacker, int victimEnt, int dmg, float duration, bool headshot = false)
+static void ShowDamageFollow(int attacker, int victimEnt, int dmg, float duration, bool headshot = false, int forcedSlot = -1)
 {
     // ===== slot 0..4 (limite REAL)
     g_iSerial[attacker]++;
-    int slot = g_iSerial[attacker] % STACK_LIMIT;
+    int slot = (forcedSlot >= 0) ? forcedSlot : (g_iSerial[attacker] % STACK_LIMIT);
     int serialNow = g_iSerial[attacker];
     g_iSlotSerial[attacker][slot] = serialNow;
 
@@ -323,6 +334,17 @@ static void KillEntRef(int entRef)
     AcceptEntityInput(ent, "Kill");
 }
 
+static void ResetChainState(int attacker)
+{
+    if (attacker < 1 || attacker > MaxClients)
+        return;
+
+    g_iChainVictim[attacker] = 0;
+    g_iChainDamage[attacker] = 0;
+    g_bChainHeadshot[attacker] = false;
+    g_fChainLastHitAt[attacker] = 0.0;
+}
+
 static void ResetPendingDamageForAttacker(int attacker)
 {
     if (attacker < 1 || attacker > MaxClients)
@@ -448,7 +470,34 @@ public Action Timer_FlushPendingDamage(Handle timer, any data)
     if (victimEnt >= 1 && victimEnt <= MaxClients && !IsClientInGame(victimEnt))
         return Plugin_Stop;
 
-    ShowDamageFollow(attacker, victimEnt, damage, g_cvTimeout.FloatValue, headshot);
+    int displayDamage = damage;
+    bool displayHeadshot = headshot;
+    int displaySlot = -1;
+
+    if (g_cvMode.IntValue == 1)
+    {
+        float now = GetGameTime();
+        float resetDelay = g_cvChainReset.FloatValue;
+        bool resetChain = (g_iChainVictim[attacker] != victimEnt) || ((now - g_fChainLastHitAt[attacker]) > resetDelay);
+        if (resetChain)
+        {
+            ResetChainState(attacker);
+        }
+
+        g_iChainVictim[attacker] = victimEnt;
+        g_iChainDamage[attacker] += damage;
+        if (headshot)
+        {
+            g_bChainHeadshot[attacker] = true;
+        }
+        g_fChainLastHitAt[attacker] = now;
+
+        displayDamage = g_iChainDamage[attacker];
+        displayHeadshot = g_bChainHeadshot[attacker];
+        displaySlot = 0;
+    }
+
+    ShowDamageFollow(attacker, victimEnt, displayDamage, g_cvTimeout.FloatValue, displayHeadshot, displaySlot);
     return Plugin_Stop;
 }
 
@@ -466,6 +515,7 @@ public void Event_RoundStart(Event event, const char[] name, bool dontBroadcast)
             g_iSlotSerial[client][s] = 0;
         }
         ResetPendingDamageForAttacker(client);
+        ResetChainState(client);
     }
 }
 
@@ -476,7 +526,7 @@ public Action Command_DmgHintTest(int client, int args)
 
     int target = client;
     float duration = g_cvTimeout.FloatValue;
-    ShowDamageFollow(client, target, 99, duration, false);
+    ShowDamageFollow(client, target, 99, duration, false, g_cvMode.IntValue == 1 ? 0 : -1);
     ReplyToCommand(client, "[dmg_hint] teste enviado");
     return Plugin_Handled;
 }
