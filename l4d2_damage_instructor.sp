@@ -39,7 +39,6 @@ float g_fLastHeadshotAt[MAXPLAYERS + 1][MAX_TRACKED_ENTITIES + 1];
 Handle g_hPendingTimer[MAXPLAYERS + 1][MAX_TRACKED_ENTITIES + 1];
 int g_iChainVictim[MAXPLAYERS + 1];
 int g_iChainDamage[MAXPLAYERS + 1];
-bool g_bChainHeadshot[MAXPLAYERS + 1];
 float g_fChainLastHitAt[MAXPLAYERS + 1];
 
 // refs do env_instructor_hint por slot
@@ -348,7 +347,6 @@ static void ResetChainState(int attacker)
 
     g_iChainVictim[attacker] = 0;
     g_iChainDamage[attacker] = 0;
-    g_bChainHeadshot[attacker] = false;
     g_fChainLastHitAt[attacker] = 0.0;
 }
 
@@ -493,14 +491,10 @@ public Action Timer_FlushPendingDamage(Handle timer, any data)
 
         g_iChainVictim[attacker] = victimEnt;
         g_iChainDamage[attacker] += damage;
-        if (headshot)
-        {
-            g_bChainHeadshot[attacker] = true;
-        }
         g_fChainLastHitAt[attacker] = now;
 
         displayDamage = g_iChainDamage[attacker];
-        displayHeadshot = g_bChainHeadshot[attacker];
+        displayHeadshot = headshot;
         displaySlot = 0;
     }
 
