@@ -30,6 +30,16 @@ ConVar g_cvChainReset;
 ConVar g_cvColorNormal;
 ConVar g_cvColorHeadshot;
 
+bool g_bRuntimeStarted;
+float g_fCfgTimeout;
+float g_fCfgAggregateWindow;
+int g_iCfgRange;
+bool g_bCfgForceCaption;
+int g_iCfgMode;
+float g_fCfgChainReset;
+char g_sCfgColorNormal[32];
+char g_sCfgColorHeadshot[32];
+
 int g_iSerial[MAXPLAYERS + 1];
 int g_iSlotSerial[MAXPLAYERS + 1][STACK_LIMIT];
 int g_iPendingDamage[MAXPLAYERS + 1][MAX_TRACKED_ENTITIES + 1];
@@ -56,7 +66,7 @@ public Plugin myinfo =
 
 public void OnPluginStart()
 {
-    g_cvEnable  = CreateConVar("sm_dmg_instructor_enable", "0", "0=off 1=on", FCVAR_NOTIFY, true, 0.0, true, 1.0);
+    g_cvEnable  = CreateConVar("sm_dmg_instructor_enable", "1", "0=off 1=armado; inicia quando houver jogador humano", FCVAR_NOTIFY, true, 0.0, true, 1.0);
     g_cvTimeout = CreateConVar("sm_dmg_instructor_timeout", "0.65", "Tempo (seg) na tela (float)", FCVAR_NOTIFY, true, 0.05, true, 5.0);
     g_cvAggregateWindow = CreateConVar("sm_dmg_instructor_aggregate_window", "0.03", "Janela para somar pellets/ticks em um numero", FCVAR_NOTIFY, true, 0.0, true, 0.25);
     g_cvRange = CreateConVar("sm_dmg_instructor_range", "3000", "Distancia maxima para ver o hint em unidades", FCVAR_NOTIFY, true, 0.0, true, 10000.0);
@@ -65,6 +75,15 @@ public void OnPluginStart()
     g_cvChainReset = CreateConVar("sm_dmg_instructor_chain_reset", "1.0", "Tempo sem dano para resetar a soma do modo 1", FCVAR_NOTIFY, true, 0.1, true, 10.0);
     g_cvColorNormal = CreateConVar("sm_dmg_instructor_color_normal", "255 0 0", "Cor RGB do dano normal no formato: R G B");
     g_cvColorHeadshot = CreateConVar("sm_dmg_instructor_color_headshot", "255 140 0", "Cor RGB do headshot no formato: R G B");
+    HookConVarChange(g_cvEnable, ConVarChanged_Settings);
+    HookConVarChange(g_cvTimeout, ConVarChanged_Settings);
+    HookConVarChange(g_cvAggregateWindow, ConVarChanged_Settings);
+    HookConVarChange(g_cvRange, ConVarChanged_Settings);
+    HookConVarChange(g_cvForceCaption, ConVarChanged_Settings);
+    HookConVarChange(g_cvMode, ConVarChanged_Settings);
+    HookConVarChange(g_cvChainReset, ConVarChanged_Settings);
+    HookConVarChange(g_cvColorNormal, ConVarChanged_Settings);
+    HookConVarChange(g_cvColorHeadshot, ConVarChanged_Settings);
     RegConsoleCmd("sm_dmghinttest", Command_DmgHintTest);
     HookEvent("round_start", Event_RoundStart, EventHookMode_PostNoCopy);
     HookEvent("player_hurt", Event_PlayerHurt, EventHookMode_Post);
@@ -75,6 +94,8 @@ public void OnPluginStart()
     // late load
     for (int i = 1; i <= MaxClients; i++)
         if (IsClientInGame(i)) OnClientPutInServer(i);
+
+    RefreshRuntimeState();
 }
 
 public void OnClientPutInServer(int client)
@@ -90,6 +111,8 @@ public void OnClientPutInServer(int client)
 
     // hook de dano em players também
     SDKHook(client, SDKHook_OnTakeDamagePost, OnTakeDamagePost_Any);
+
+    RefreshRuntimeState();
 
 }
 
@@ -107,10 +130,12 @@ public void OnClientDisconnect(int client)
     ResetPendingDamageForVictim(client);
     ResetChainState(client);
     g_iSerial[client] = 0;
+    RefreshRuntimeState();
 }
 
 public void OnMapStart()
 {
+    g_bRuntimeStarted = false;
     for (int client = 1; client <= MaxClients; client++)
     {
         g_iSerial[client] = 0;
@@ -132,6 +157,87 @@ public void OnEntityCreated(int entity, const char[] classname)
     {
         SDKHook(entity, SDKHook_OnTakeDamagePost, OnTakeDamagePost_Any);
     }
+}
+
+public void ConVarChanged_Settings(ConVar convar, const char[] oldValue, const char[] newValue)
+{
+    if (convar == g_cvEnable)
+    {
+        RefreshRuntimeState();
+        return;
+    }
+
+    if (g_bRuntimeStarted)
+        LoadRuntimeConfig();
+}
+
+static bool HasAnyHumanPlayer()
+{
+    for (int i = 1; i <= MaxClients; i++)
+    {
+        if (!IsClientInGame(i) || IsFakeClient(i))
+            continue;
+
+        return true;
+    }
+
+    return false;
+}
+
+static void LoadRuntimeConfig()
+{
+    g_fCfgTimeout = g_cvTimeout.FloatValue;
+    g_fCfgAggregateWindow = g_cvAggregateWindow.FloatValue;
+    g_iCfgRange = g_cvRange.IntValue;
+    g_bCfgForceCaption = g_cvForceCaption.BoolValue;
+    g_iCfgMode = g_cvMode.IntValue;
+    g_fCfgChainReset = g_cvChainReset.FloatValue;
+    g_cvColorNormal.GetString(g_sCfgColorNormal, sizeof(g_sCfgColorNormal));
+    g_cvColorHeadshot.GetString(g_sCfgColorHeadshot, sizeof(g_sCfgColorHeadshot));
+}
+
+static void StartRuntime()
+{
+    if (g_bRuntimeStarted)
+        return;
+
+    LoadRuntimeConfig();
+    g_bRuntimeStarted = true;
+}
+
+static void StopRuntime()
+{
+    if (!g_bRuntimeStarted)
+        return;
+
+    g_bRuntimeStarted = false;
+
+    for (int client = 1; client <= MaxClients; client++)
+    {
+        for (int s = 0; s < STACK_LIMIT; s++)
+        {
+            KillEntRef(g_iSlotHintRef[client][s]);
+            KillEntRef(g_iSlotAnchorRef[client][s]);
+            g_iSlotHintRef[client][s] = INVALID_ENT_REFERENCE;
+            g_iSlotAnchorRef[client][s] = INVALID_ENT_REFERENCE;
+            g_iSlotSerial[client][s] = 0;
+        }
+
+        ResetPendingDamageForAttacker(client);
+        ResetChainState(client);
+        g_iSerial[client] = 0;
+    }
+}
+
+static void RefreshRuntimeState()
+{
+    if (!g_cvEnable.BoolValue || !HasAnyHumanPlayer())
+    {
+        StopRuntime();
+        return;
+    }
+
+    StartRuntime();
 }
 
 static bool IsTankVictim(int victim)
@@ -158,7 +264,7 @@ static bool ShouldBlockTankDamageHint(int victim, int damage)
 
 public void OnTakeDamagePost_Any(int victim, int attacker, int inflictor, float damage, int damagetype)
 {
-    if (!g_cvEnable.BoolValue) return;
+    if (!g_bRuntimeStarted) return;
     if (damage <= 0.0) return;
 
     // atacante precisa ser player
@@ -231,17 +337,17 @@ static void ConfigureDamageHint(int hint, int attacker, int slot, const char[] t
     DispatchKeyValue(hint, "hint_static", "0");
     DispatchKeyValue(hint, "hint_timeout", "0.0");
     DispatchKeyValue(hint, "hint_icon_offset", "0");
-    IntToString(g_cvRange.IntValue, buffer, sizeof(buffer));
+    IntToString(g_iCfgRange, buffer, sizeof(buffer));
     DispatchKeyValue(hint, "hint_range", buffer);
     DispatchKeyValue(hint, "hint_nooffscreen", "1");
     DispatchKeyValue(hint, "hint_icon_onscreen", "");
     DispatchKeyValue(hint, "hint_icon_offscreen", "");
     DispatchKeyValue(hint, "hint_binding", "");
-    DispatchKeyValue(hint, "hint_forcecaption", g_cvForceCaption.BoolValue ? "1" : "0");
+    DispatchKeyValue(hint, "hint_forcecaption", g_bCfgForceCaption ? "1" : "0");
     if (headshot)
-        g_cvColorHeadshot.GetString(color, sizeof(color));
+        strcopy(color, sizeof(color), g_sCfgColorHeadshot);
     else
-        g_cvColorNormal.GetString(color, sizeof(color));
+        strcopy(color, sizeof(color), g_sCfgColorNormal);
     DispatchKeyValue(hint, "hint_color", color);
     DispatchKeyValue(hint, "hint_flags", "0");
     DispatchKeyValue(hint, "hint_display_limit", "0");
@@ -277,7 +383,7 @@ static void QueueDamageHint(int attacker, int victimEnt, int damage)
         g_hPendingTimer[attacker][victimEnt] = null;
     }
 
-    float window = g_cvAggregateWindow.FloatValue;
+    float window = g_fCfgAggregateWindow;
     if (window < 0.0)
     {
         window = 0.0;
@@ -412,7 +518,7 @@ static bool EventIsHeadshot(Event event)
 
 public void Event_PlayerHurt(Event event, const char[] name, bool dontBroadcast)
 {
-    if (!g_cvEnable.BoolValue)
+    if (!g_bRuntimeStarted)
         return;
 
     if (!EventIsHeadshot(event))
@@ -428,7 +534,7 @@ public void Event_PlayerHurt(Event event, const char[] name, bool dontBroadcast)
 
 public void Event_InfectedHurt(Event event, const char[] name, bool dontBroadcast)
 {
-    if (!g_cvEnable.BoolValue)
+    if (!g_bRuntimeStarted)
         return;
 
     if (!EventIsHeadshot(event))
@@ -479,10 +585,10 @@ public Action Timer_FlushPendingDamage(Handle timer, any data)
     bool displayHeadshot = headshot;
     int displaySlot = -1;
 
-    if (g_cvMode.IntValue == 1)
+    if (g_iCfgMode == 1)
     {
         float now = GetGameTime();
-        float resetDelay = g_cvChainReset.FloatValue;
+        float resetDelay = g_fCfgChainReset;
         bool resetChain = (g_iChainVictim[attacker] != victimEnt) || ((now - g_fChainLastHitAt[attacker]) > resetDelay);
         if (resetChain)
         {
@@ -498,7 +604,7 @@ public Action Timer_FlushPendingDamage(Handle timer, any data)
         displaySlot = 0;
     }
 
-    ShowDamageFollow(attacker, victimEnt, displayDamage, g_cvTimeout.FloatValue, displayHeadshot, displaySlot);
+    ShowDamageFollow(attacker, victimEnt, displayDamage, g_fCfgTimeout, displayHeadshot, displaySlot);
     return Plugin_Stop;
 }
 
@@ -524,10 +630,15 @@ public Action Command_DmgHintTest(int client, int args)
 {
     if (client < 1 || client > MaxClients || !IsClientInGame(client) || IsFakeClient(client))
         return Plugin_Handled;
+    if (!g_bRuntimeStarted)
+    {
+        ReplyToCommand(client, "[dmg_hint] plugin ainda nao iniciou");
+        return Plugin_Handled;
+    }
 
     int target = client;
-    float duration = g_cvTimeout.FloatValue;
-    ShowDamageFollow(client, target, 99, duration, false, g_cvMode.IntValue == 1 ? 0 : -1);
+    float duration = g_fCfgTimeout;
+    ShowDamageFollow(client, target, 99, duration, false, g_iCfgMode == 1 ? 0 : -1);
     ReplyToCommand(client, "[dmg_hint] teste enviado");
     return Plugin_Handled;
 }
