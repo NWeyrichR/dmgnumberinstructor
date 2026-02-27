@@ -72,3 +72,5 @@ sm_cvar sm_dmg_instructor_range 3000
 sm_cvar sm_dmg_instructor_forcecaption 1
 sm_cvar sm_dmg_instructor_mode 0
 sm_cvar sm_dmg_instructor_chain_reset 1.0
+sm_cvar sm_dmg_instructor_color_normal "255 0 0"
+sm_cvar sm_dmg_instructor_color_headshot "255 165 0"
