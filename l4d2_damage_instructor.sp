@@ -49,7 +49,7 @@ int g_iSlotAnchorRef[MAXPLAYERS + 1][STACK_LIMIT];
 public Plugin myinfo =
 {
     name        = "[L4D2] Damage Instructor Hint",
-    author      = "Codex",
+    author      = "Weyrich",
     description = "Mostra dano em env_instructor_hint separado por atacante",
     version     = "4.0.0",
     url         = ""
