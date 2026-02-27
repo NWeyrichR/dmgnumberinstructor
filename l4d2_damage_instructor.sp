@@ -19,8 +19,6 @@
 #define STACK_LIMIT 5
 #define MAX_TRACKED_ENTITIES 2048
 #define NAME_LEN 48
-#define COLOR_NORMAL "255 0 0"
-#define COLOR_HEADSHOT "255 140 0"
 
 ConVar g_cvEnable;
 ConVar g_cvTimeout;
@@ -29,6 +27,8 @@ ConVar g_cvRange;
 ConVar g_cvForceCaption;
 ConVar g_cvMode;
 ConVar g_cvChainReset;
+ConVar g_cvColorNormal;
+ConVar g_cvColorHeadshot;
 
 int g_iSerial[MAXPLAYERS + 1];
 int g_iSlotSerial[MAXPLAYERS + 1][STACK_LIMIT];
@@ -64,6 +64,8 @@ public void OnPluginStart()
     g_cvForceCaption = CreateConVar("sm_dmg_instructor_forcecaption", "1", "1=forca caption para aparecer a longa distancia", FCVAR_NOTIFY, true, 0.0, true, 1.0);
     g_cvMode = CreateConVar("sm_dmg_instructor_mode", "0", "0=modo atual empilhado, 1=modo acumulado continuo", FCVAR_NOTIFY, true, 0.0, true, 1.0);
     g_cvChainReset = CreateConVar("sm_dmg_instructor_chain_reset", "1.0", "Tempo sem dano para resetar a soma do modo 1", FCVAR_NOTIFY, true, 0.1, true, 10.0);
+    g_cvColorNormal = CreateConVar("sm_dmg_instructor_color_normal", "255 0 0", "Cor RGB do dano normal no formato: R G B");
+    g_cvColorHeadshot = CreateConVar("sm_dmg_instructor_color_headshot", "255 140 0", "Cor RGB do headshot no formato: R G B");
     RegConsoleCmd("sm_dmghinttest", Command_DmgHintTest);
     HookEvent("round_start", Event_RoundStart, EventHookMode_PostNoCopy);
     HookEvent("player_hurt", Event_PlayerHurt, EventHookMode_Post);
@@ -222,6 +224,7 @@ static void ShowDamageFollow(int attacker, int victimEnt, int dmg, float duratio
 static void ConfigureDamageHint(int hint, int attacker, int slot, const char[] targetName, const char[] caption, bool headshot)
 {
     char buffer[64];
+    char color[32];
 
     DispatchKeyValue(hint, "hint_target", targetName);
     DispatchKeyValue(hint, "hint_caption", caption);
@@ -236,7 +239,11 @@ static void ConfigureDamageHint(int hint, int attacker, int slot, const char[] t
     DispatchKeyValue(hint, "hint_icon_offscreen", "");
     DispatchKeyValue(hint, "hint_binding", "");
     DispatchKeyValue(hint, "hint_forcecaption", g_cvForceCaption.BoolValue ? "1" : "0");
-    DispatchKeyValue(hint, "hint_color", headshot ? COLOR_HEADSHOT : COLOR_NORMAL);
+    if (headshot)
+        g_cvColorHeadshot.GetString(color, sizeof(color));
+    else
+        g_cvColorNormal.GetString(color, sizeof(color));
+    DispatchKeyValue(hint, "hint_color", color);
     DispatchKeyValue(hint, "hint_flags", "0");
     DispatchKeyValue(hint, "hint_display_limit", "0");
     DispatchKeyValue(hint, "hint_suppress_rest", "1");
