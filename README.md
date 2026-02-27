@@ -42,6 +42,16 @@ https://github.com/BloodyBlade/L4D2-Plugins/blob/main/l4d2_infected_hud.sp
 - `sm_dmg_instructor_chain_reset`
   - Time without dealing damage before the chained total resets in mode `1`
   - Example: `1.0`
+    
+- `sm_dmg_instructor_color_normal`
+  - Defines the color used for normal damage numbers.
+  - Example: `sm_cvar sm_dmg_instructor_color_normal "255 0 0"`
+    
+- `sm_dmg_instructor_color_headshot`
+  - Defines the color used for headshot damage numbers.
+  - Example: `sm_cvar sm_dmg_instructor_color_headshot "255 165 0"`
+
+> ⚠️ Note: These colors are defined using RGB values, but due to the game's palette limitations, the displayed colors may not be *100%* accurate to the exact RGB you choose.
 
 ### Modes
 #### Mode 0
