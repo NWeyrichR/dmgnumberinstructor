@@ -47,9 +47,11 @@ int g_iPendingSerial[MAXPLAYERS + 1][MAX_TRACKED_ENTITIES + 1];
 bool g_bPendingHeadshot[MAXPLAYERS + 1][MAX_TRACKED_ENTITIES + 1];
 float g_fLastHeadshotAt[MAXPLAYERS + 1][MAX_TRACKED_ENTITIES + 1];
 Handle g_hPendingTimer[MAXPLAYERS + 1][MAX_TRACKED_ENTITIES + 1];
-int g_iChainVictim[MAXPLAYERS + 1];
-int g_iChainDamage[MAXPLAYERS + 1];
-float g_fChainLastHitAt[MAXPLAYERS + 1];
+int g_iChainVictim[MAXPLAYERS + 1][STACK_LIMIT];
+int g_iChainDamage[MAXPLAYERS + 1][STACK_LIMIT];
+float g_fChainLastHitAt[MAXPLAYERS + 1][STACK_LIMIT];
+int g_iTraceIgnoreAttacker;
+int g_iTraceIgnoreVictim;
 
 // refs do env_instructor_hint por slot
 int g_iSlotHintRef[MAXPLAYERS + 1][STACK_LIMIT];
@@ -262,6 +264,122 @@ static bool ShouldBlockTankDamageHint(int victim, int damage)
     return damage == 1 || damage > 5000;
 }
 
+static bool GetEntityCenterPos(int entity, float outPos[3], float zOffset)
+{
+    if (entity <= 0)
+        return false;
+
+    if (entity <= MaxClients)
+    {
+        if (!IsClientInGame(entity))
+            return false;
+
+        GetClientAbsOrigin(entity, outPos);
+        outPos[2] += zOffset;
+        return true;
+    }
+
+    if (!IsValidEntity(entity))
+        return false;
+
+    if (HasEntProp(entity, Prop_Data, "m_vecAbsOrigin"))
+    {
+        GetEntPropVector(entity, Prop_Data, "m_vecAbsOrigin", outPos);
+    }
+    else if (HasEntProp(entity, Prop_Send, "m_vecOrigin"))
+    {
+        GetEntPropVector(entity, Prop_Send, "m_vecOrigin", outPos);
+    }
+    else
+    {
+        return false;
+    }
+
+    outPos[2] += zOffset;
+    return true;
+}
+
+public bool TraceFilter_IgnoreAttackerVictim(int entity, int mask, any data)
+{
+    return (entity != g_iTraceIgnoreAttacker && entity != g_iTraceIgnoreVictim);
+}
+
+static bool GetHintAnchorPos(int attacker, int victimEnt, int slot, float outPos[3])
+{
+    float height = (victimEnt <= MaxClients) ? 50.0 : 28.0;
+    if (!GetEntityCenterPos(victimEnt, outPos, height))
+        return false;
+
+    float eye[3];
+    GetClientEyePosition(attacker, eye);
+
+    float toEye[3];
+    MakeVectorFromPoints(outPos, eye, toEye);
+    float dist = GetVectorLength(toEye);
+    if (dist > 0.1)
+    {
+        NormalizeVector(toEye, toEye);
+
+        float towardEye = (dist < 120.0) ? 14.0 : 8.0;
+        outPos[0] += toEye[0] * towardEye;
+        outPos[1] += toEye[1] * towardEye;
+
+        if (dist < 120.0)
+            outPos[2] += 12.0;
+    }
+
+    if (slot >= 0)
+    {
+        float ang[3], fwd[3], right[3], up[3];
+        GetClientEyeAngles(attacker, ang);
+        GetAngleVectors(ang, fwd, right, up);
+
+        float side = (float(slot) - ((float(STACK_LIMIT) - 1.0) * 0.5)) * 5.0;
+        outPos[0] += right[0] * side;
+        outPos[1] += right[1] * side;
+        outPos[2] += float(slot) * 2.0;
+    }
+
+    return true;
+}
+
+static bool IsHintOccluded(int attacker, int victimEnt, const float targetPos[3])
+{
+    float eye[3];
+    GetClientEyePosition(attacker, eye);
+
+    g_iTraceIgnoreAttacker = attacker;
+    g_iTraceIgnoreVictim = victimEnt;
+
+    Handle trace = TR_TraceRayFilterEx(eye, targetPos, MASK_SHOT, RayType_EndPoint, TraceFilter_IgnoreAttackerVictim, 0);
+    bool blocked = TR_DidHit(trace);
+    delete trace;
+
+    g_iTraceIgnoreAttacker = 0;
+    g_iTraceIgnoreVictim = 0;
+    return blocked;
+}
+
+static int CreateHintAnchor(int attacker, int victimEnt, int slot, int serialNow, const char[] parentName, char[] anchorName, int anchorNameLen)
+{
+    float anchorPos[3];
+    if (!GetHintAnchorPos(attacker, victimEnt, slot, anchorPos))
+        return -1;
+
+    int anchor = CreateEntityByName("info_target_instructor_hint");
+    if (anchor == -1)
+        return -1;
+
+    Format(anchorName, anchorNameLen, "dmg_anchor_%d_%d_%d", attacker, slot, serialNow);
+    DispatchKeyValue(anchor, "targetname", anchorName);
+    DispatchSpawn(anchor);
+    TeleportEntity(anchor, anchorPos, NULL_VECTOR, NULL_VECTOR);
+
+    SetVariantString(parentName);
+    AcceptEntityInput(anchor, "SetParent");
+    return anchor;
+}
+
 public void OnTakeDamagePost_Any(int victim, int attacker, int inflictor, float damage, int damagetype)
 {
     if (!g_bRuntimeStarted) return;
@@ -277,6 +395,10 @@ public void OnTakeDamagePost_Any(int victim, int attacker, int inflictor, float 
     int dmg = RoundToNearest(damage);
     if (dmg <= 0) return;
     if (ShouldBlockTankDamageHint(victim, dmg)) return;
+
+    float previewPos[3];
+    if (!GetHintAnchorPos(attacker, victim, -1, previewPos)) return;
+    if (IsHintOccluded(attacker, victim, previewPos)) return;
 
     QueueDamageHint(attacker, victim, dmg);
 }
@@ -306,15 +428,25 @@ static void ShowDamageFollow(int attacker, int victimEnt, int dmg, float duratio
     Format(targetName, sizeof(targetName), "dmg_target_%d", victimEnt);
     DispatchKeyValue(victimEnt, "targetname", targetName);
 
+    char hintTargetName[NAME_LEN];
+    strcopy(hintTargetName, sizeof(hintTargetName), targetName);
+
+    char anchorName[NAME_LEN];
+    int anchor = CreateHintAnchor(attacker, victimEnt, slot, serialNow, targetName, anchorName, sizeof(anchorName));
+    if (anchor != -1)
+    {
+        strcopy(hintTargetName, sizeof(hintTargetName), anchorName);
+    }
+
     char caption[16];
     Format(caption, sizeof(caption), "%d", dmg);
-    ConfigureDamageHint(hint, attacker, slot, targetName, caption, headshot);
+    ConfigureDamageHint(hint, attacker, slot, hintTargetName, caption, headshot);
 
     DispatchSpawn(hint);
     AcceptEntityInput(hint, "ShowHint");
 
     g_iSlotHintRef[attacker][slot] = EntIndexToEntRef(hint);
-    g_iSlotAnchorRef[attacker][slot] = INVALID_ENT_REFERENCE;
+    g_iSlotAnchorRef[attacker][slot] = (anchor != -1) ? EntIndexToEntRef(anchor) : INVALID_ENT_REFERENCE;
 
     // timer mata ambos no tempo exato
     DataPack dp = new DataPack();
@@ -322,7 +454,7 @@ static void ShowDamageFollow(int attacker, int victimEnt, int dmg, float duratio
     dp.WriteCell(slot);
     dp.WriteCell(serialNow);
     dp.WriteCell(EntIndexToEntRef(hint));
-    dp.WriteCell(INVALID_ENT_REFERENCE);
+    dp.WriteCell(g_iSlotAnchorRef[attacker][slot]);
     CreateTimer(duration, Timer_KillHintAndAnchor, dp, TIMER_FLAG_NO_MAPCHANGE);
 }
 
@@ -375,13 +507,12 @@ static void QueueDamageHint(int attacker, int victimEnt, int damage)
         g_bPendingHeadshot[attacker][victimEnt] = true;
     }
 
-    g_iPendingSerial[attacker][victimEnt]++;
-
     if (g_hPendingTimer[attacker][victimEnt] != null)
     {
-        delete g_hPendingTimer[attacker][victimEnt];
-        g_hPendingTimer[attacker][victimEnt] = null;
+        return;
     }
+
+    g_iPendingSerial[attacker][victimEnt]++;
 
     float window = g_fCfgAggregateWindow;
     if (window < 0.0)
@@ -451,9 +582,57 @@ static void ResetChainState(int attacker)
     if (attacker < 1 || attacker > MaxClients)
         return;
 
-    g_iChainVictim[attacker] = 0;
-    g_iChainDamage[attacker] = 0;
-    g_fChainLastHitAt[attacker] = 0.0;
+    for (int slot = 0; slot < STACK_LIMIT; slot++)
+    {
+        g_iChainVictim[attacker][slot] = 0;
+        g_iChainDamage[attacker][slot] = 0;
+        g_fChainLastHitAt[attacker][slot] = 0.0;
+    }
+}
+
+static int FindChainSlot(int attacker, int victimEnt, float now)
+{
+    int freeSlot = -1;
+    int expiredSlot = -1;
+    int oldestSlot = 0;
+    float oldestTime = 0.0;
+
+    for (int slot = 0; slot < STACK_LIMIT; slot++)
+    {
+        if (g_iChainVictim[attacker][slot] == victimEnt)
+        {
+            if ((now - g_fChainLastHitAt[attacker][slot]) <= g_fCfgChainReset)
+                return slot;
+
+            expiredSlot = slot;
+            break;
+        }
+
+        if (g_iChainVictim[attacker][slot] == 0)
+        {
+            if (freeSlot == -1)
+                freeSlot = slot;
+            continue;
+        }
+
+        if ((now - g_fChainLastHitAt[attacker][slot]) > g_fCfgChainReset)
+        {
+            if (expiredSlot == -1)
+                expiredSlot = slot;
+        }
+
+        if (slot == 0 || g_fChainLastHitAt[attacker][slot] < oldestTime)
+        {
+            oldestTime = g_fChainLastHitAt[attacker][slot];
+            oldestSlot = slot;
+        }
+    }
+
+    if (expiredSlot != -1)
+        return expiredSlot;
+    if (freeSlot != -1)
+        return freeSlot;
+    return oldestSlot;
 }
 
 static void ResetPendingDamageForAttacker(int attacker)
@@ -588,20 +767,22 @@ public Action Timer_FlushPendingDamage(Handle timer, any data)
     if (g_iCfgMode == 1)
     {
         float now = GetGameTime();
-        float resetDelay = g_fCfgChainReset;
-        bool resetChain = (g_iChainVictim[attacker] != victimEnt) || ((now - g_fChainLastHitAt[attacker]) > resetDelay);
-        if (resetChain)
+        int chainSlot = FindChainSlot(attacker, victimEnt, now);
+        bool sameVictim = (g_iChainVictim[attacker][chainSlot] == victimEnt);
+        bool chainAlive = sameVictim && ((now - g_fChainLastHitAt[attacker][chainSlot]) <= g_fCfgChainReset);
+
+        if (!chainAlive)
         {
-            ResetChainState(attacker);
+            g_iChainVictim[attacker][chainSlot] = victimEnt;
+            g_iChainDamage[attacker][chainSlot] = 0;
         }
 
-        g_iChainVictim[attacker] = victimEnt;
-        g_iChainDamage[attacker] += damage;
-        g_fChainLastHitAt[attacker] = now;
+        g_iChainDamage[attacker][chainSlot] += damage;
+        g_fChainLastHitAt[attacker][chainSlot] = now;
 
-        displayDamage = g_iChainDamage[attacker];
+        displayDamage = g_iChainDamage[attacker][chainSlot];
         displayHeadshot = headshot;
-        displaySlot = 0;
+        displaySlot = chainSlot;
     }
 
     ShowDamageFollow(attacker, victimEnt, displayDamage, g_fCfgTimeout, displayHeadshot, displaySlot);
