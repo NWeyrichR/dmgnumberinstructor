@@ -204,7 +204,3 @@ sm_dmg_instructor_timeout "0.8"
 - Tank damage is filtered by the plugin logic in several cases, so the main focus is common infected, Witch, and non-Tank special infected.
 - Headshots can use a separate color.
 - The config file is generated automatically by `AutoExecConfig`.
-
-## License
-
-Add the repository license that matches how you want to publish the project.
