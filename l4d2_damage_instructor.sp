@@ -566,7 +566,8 @@ static void ShowDamageFollow(int attacker, int victimEnt, int dmg, float duratio
     ConfigureDamageHint(hint, attacker, slot, targetName, caption, headshot);
 
     DispatchSpawn(hint);
-    AcceptEntityInput(hint, "ShowHint");
+    // `hint_local_player_only` depends on the activator being the target client.
+    AcceptEntityInput(hint, "ShowHint", attacker, attacker);
     g_fLastShownAt[attacker][victimEnt] = GetGameTime();
 
     g_iSlotHintRef[attacker][slot] = EntIndexToEntRef(hint);
